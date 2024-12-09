@@ -18,7 +18,7 @@ import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize, sent_tokenize
 
-# For summarization (optional, requires OPENAI_API_KEY)
+# For summarization (optional)
 from langchain.chains import LLMChain
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
@@ -86,7 +86,6 @@ def generate_embeddings(texts, model):
     return embeddings
 
 def load_or_compute_embeddings(df, unique_id):
-    # unique_id could be based on file name and column selection
     embeddings_file = f"{unique_id}.pkl"
     texts = df['combined_text'].tolist()
 
@@ -118,10 +117,8 @@ def cluster_documents(texts, embeddings):
     topics, _ = topic_model.fit_transform(texts_cleaned, embeddings=embeddings)
     return topics, topic_model
 
-def cluster_sentences(all_texts, all_embeddings):
+def cluster_sentences(all_texts):
     # Sentence-level clustering
-    # 1. Split each document into sentences
-    # 2. Embeddings must correspond to sentences, so we must re-embed at sentence level
     sentences = []
     doc_indices = []
     for i, doc_text in enumerate(all_texts):
@@ -132,7 +129,6 @@ def cluster_sentences(all_texts, all_embeddings):
     model = get_embedding_model()
     sentence_embeddings = model.encode(sentences, show_progress_bar=True, device=device)
 
-    # Cluster sentences
     stop_words = set(stopwords.words('english'))
     texts_cleaned = []
     for text in sentences:
@@ -144,43 +140,32 @@ def cluster_sentences(all_texts, all_embeddings):
     topic_model = BERTopic(embedding_model=model, hdbscan_model=hdbscan_model)
     topics, _ = topic_model.fit_transform(texts_cleaned, embeddings=sentence_embeddings)
 
-    # Return sentence-level clusters, plus mapping back to documents
     return sentences, sentence_embeddings, topics, doc_indices, topic_model
 
-def compute_overlap_metrics(lhs_topics, rhs_topics):
-    # This function computes some high-level overlap metrics between two lists of topics.
-    # For document-level clustering:
-    # - Compute how many clusters overlap. For instance, we can measure the Jaccard similarity
-    #   of sets of topics or how many documents share the same topic.
-    lhs_topic_counts = pd.Series(lhs_topics).value_counts()
-    rhs_topic_counts = pd.Series(rhs_topics).value_counts()
+def compute_cluster_frequencies(topics, lhs_count, level='document'):
+    """Compute how many docs or sentences in LHS and RHS fall into each cluster."""
+    df = pd.DataFrame({'doc_index': range(len(topics)), 'topic': topics})
+    lhs_mask = df['doc_index'] < lhs_count
+    rhs_mask = ~lhs_mask
 
-    # Intersection of topic labels present in both sets
-    common_topics = set(lhs_topic_counts.index).intersection(set(rhs_topic_counts.index))
-    lhs_common = lhs_topic_counts[lhs_topic_counts.index.isin(common_topics)].sum()
-    rhs_common = rhs_topic_counts[rhs_topic_counts.index.isin(common_topics)].sum()
-
-    # Simple metric: fraction of documents from LHS that share at least one topic with RHS
-    # (Here it's simplistic because each doc has only one main topic in doc-level clustering)
-    # For sentence-level, we can refine.
-
-    total_lhs = len(lhs_topics)
-    total_rhs = len(rhs_topics)
-
-    # Overlap ratio (very simplistic metric)
-    overlap_ratio = (lhs_common + rhs_common) / (total_lhs + total_rhs)
-
-    return {
-        "Number_of_common_topics": len(common_topics),
-        "Overlap_ratio": overlap_ratio
-    }
+    lhs_counts = df[lhs_mask]['topic'].value_counts()
+    rhs_counts = df[rhs_mask]['topic'].value_counts()
+    all_clusters = sorted(set(topics))
+    freq_data = []
+    for c in all_clusters:
+        lhs_c = lhs_counts.get(c, 0)
+        rhs_c = rhs_counts.get(c, 0)
+        overlap = (lhs_c > 0 and rhs_c > 0)
+        freq_data.append({
+            'cluster': c,
+            f'LHS_{level}_count': lhs_c,
+            f'RHS_{level}_count': rhs_c,
+            'In_both': overlap
+        })
+    freq_df = pd.DataFrame(freq_data)
+    return freq_df
 
 def compute_sentence_cluster_overlap(doc_indices, topics, lhs_count):
-    # Here doc_indices indicate which doc each sentence belongs to.
-    # First portion (0 to lhs_count-1) are LHS documents, the rest are RHS.
-    lhs_indices = [i for i in range(lhs_count)]
-    rhs_indices = [i for i in range(lhs_count, max(doc_indices)+1)]
-
     # Map docs to sets of clusters
     doc_to_clusters = {}
     for i, t in enumerate(topics):
@@ -189,18 +174,15 @@ def compute_sentence_cluster_overlap(doc_indices, topics, lhs_count):
             doc_to_clusters[d] = set()
         doc_to_clusters[d].add(t)
 
-    # Compute pairwise overlaps between LHS and RHS docs
-    # This could be large, so we just do a summary
-    # For each LHS doc, find best matching RHS doc by largest cluster intersection
-    lhs_docs = [d for d in doc_to_clusters if d in lhs_indices]
-    rhs_docs = [d for d in doc_to_clusters if d in rhs_indices]
+    lhs_indices = [d for d in doc_to_clusters if d < lhs_count]
+    rhs_indices = [d for d in doc_to_clusters if d >= lhs_count]
 
     best_matches = []
-    for ld in lhs_docs:
+    for ld in lhs_indices:
         ld_clusters = doc_to_clusters[ld]
         best_match = None
         best_score = 0
-        for rd in rhs_docs:
+        for rd in rhs_indices:
             rd_clusters = doc_to_clusters[rd]
             intersection = ld_clusters.intersection(rd_clusters)
             score = len(intersection)
@@ -210,56 +192,57 @@ def compute_sentence_cluster_overlap(doc_indices, topics, lhs_count):
         best_matches.append((ld, best_match, best_score))
     return best_matches
 
-def display_overlaps(merge_df, method):
-    st.subheader("Overlap Metrics")
-    st.write("Here we show how items from LHS map to items from RHS based on the chosen clustering method.")
+# Color palette for highlighting clusters
+COLOR_PALETTE = [
+    "#FFB6C1", "#87CEFA", "#98FB98", "#FFD700", "#FFA07A", "#BA55D3", "#00FA9A", "#20B2AA", "#778899", "#FF69B4",
+    "#7FFF00", "#DC143C", "#00FFFF", "#FFA500", "#8A2BE2", "#A9A9A9", "#6A5ACD", "#D2691E", "#5F9EA0", "#FF4500"
+]
 
-    if method == "Document-level":
-        lhs_topics = merge_df[merge_df['side']=="LHS"]['Topic'].values
-        rhs_topics = merge_df[merge_df['side']=="RHS"]['Topic'].values
-        metrics = compute_overlap_metrics(lhs_topics, rhs_topics)
-        st.write("Number of Common Topics:", metrics["Number_of_common_topics"])
-        st.write("Overlap Ratio:", metrics["Overlap_ratio"])
-    elif method == "Sentence-level":
-        # We performed sentence-level clustering already
-        # The details are computed separately (in the main logic)
-        pass
+def highlight_text_by_cluster(sentences, sentence_clusters, selected_clusters):
+    # Highlight only if selected_clusters is not empty
+    # Assign each cluster a color
+    unique_clusters = list(sorted(set(sentence_clusters)))
+    cluster_color_map = {}
+    for i, c in enumerate(unique_clusters):
+        cluster_color_map[c] = COLOR_PALETTE[i % len(COLOR_PALETTE)]
+
+    highlighted_sentences = []
+    for s, c in zip(sentences, sentence_clusters):
+        color = cluster_color_map.get(c, "#FFFFFF")
+        # If we only want to highlight selected clusters, check that:
+        if c in selected_clusters:
+            highlighted_sentences.append(f'<span style="background-color:{color}; padding:2px; border-radius:3px">{s}</span>')
+        else:
+            highlighted_sentences.append(s)
+    return " ".join(highlighted_sentences)
 
 
-# Tabs: We will create a flow
-tab_instructions, tab_select_text, tab_run, tab_results, tab_faq = st.tabs(["Instructions", "Select Text Columns", "Run Fingerprint Matching", "Results & Visualization", "FAQ"])
+# Tabs
+tab_instructions, tab_select_text, tab_run, tab_results, tab_cluster_browser, tab_faq = st.tabs(["Instructions", "Select Text Columns", "Run Fingerprint Matching", "Results & Visualization", "Cluster Browser", "FAQ"])
 
 with tab_instructions:
     st.header("How to Use")
     st.markdown("""
-1. **Upload Datasets**: On the left sidebar, upload your LHS and RHS datasets (Excel files).
-2. **Select Text Columns**: Navigate to the "Select Text Columns" tab. Choose the columns from each dataset that contain free-text data. These will be combined into a single text field per row.
-3. **Run Fingerprint Matching**: In the "Run Fingerprint Matching" tab, select your method (Document-level or Sentence-level clustering) and start the process.  
-   - Document-level clustering treats each row as a single document and clusters them.  
-   - Sentence-level clustering splits each document into sentences, clusters all sentences, and then aggregates results back to the document level.
-4. **View Results**: Check the "Results & Visualization" tab to see the assigned clusters and overlap metrics.
-5. **FAQ**: Visit the "FAQ" tab for common questions and troubleshooting.
+1. **Upload Datasets**: On the left sidebar, upload your LHS and RHS datasets.
+2. **Select Text Columns**: In the "Select Text Columns" tab, choose the columns from each dataset that contain free-text data.
+3. **Run Fingerprint Matching**: In the "Run Fingerprint Matching" tab, select method (Document-level or Sentence-level) and run.
+4. **View Results**: In the "Results & Visualization" tab, see assigned clusters and a cluster frequency table.
+5. **Use Cluster Browser**: In the "Cluster Browser" tab, explore clusters, view associated docs/sentences from both sides, and optionally highlight text by cluster.
+6. **FAQ**: Check for common questions.
     """)
 
 with tab_faq:
     st.header("FAQ")
     st.markdown("""
 **Q:** What data format is required?  
-**A:** The tool accepts Excel files (.xlsx). Ensure your text columns are readable by Pandas.
+**A:** Excel (.xlsx).
 
-**Q:** How large can my datasets be?  
-**A:** Larger datasets will take longer to process and cluster. There are no strict size limits here, but performance may degrade with very large inputs.
+**Q:** Document-level vs Sentence-level?  
+**A:** Document-level clusters entire rows. Sentence-level clusters individual sentences.
 
-**Q:** What is Document-level vs Sentence-level clustering?  
-**A:** Document-level clustering groups entire documents together into topics. Sentence-level clustering breaks documents into sentences, clusters them, and then derives overlap based on shared sentence-level topics.
-
-**Q:** I get no common topics. What does that mean?  
-**A:** It could mean that the two sets of documents are semantically disjoint based on the chosen model and clustering algorithm.
-
-**Q:** Can I download the results?  
-**A:** Yes, after running clustering, you can download CSV files of the assigned topics and any summary tables provided.
+**Q:** How to see which clusters overlap?  
+**A:** Check the frequency tables in "Results & Visualization" and then go to "Cluster Browser" to see documents/sentences in chosen clusters.
     """)
-
 
 with tab_select_text:
     st.header("Select Text Columns")
@@ -287,9 +270,9 @@ with tab_select_text:
 
         if 'lhs_df' in st.session_state and 'rhs_df' in st.session_state:
             st.write("LHS Sample:")
-            st.write(st.session_state['lhs_df'].head())
+            st.dataframe(st.session_state['lhs_df'])
             st.write("RHS Sample:")
-            st.write(st.session_state['rhs_df'].head())
+            st.dataframe(st.session_state['rhs_df'])
 
 
 with tab_run:
@@ -308,31 +291,25 @@ with tab_run:
             rhs_emb = load_or_compute_embeddings(rhs_df, f"rhs_{hash(tuple(rhs_df.columns))}")
 
             if method == "Document-level":
-                # Combine data
                 all_texts = lhs_df['combined_text'].tolist() + rhs_df['combined_text'].tolist()
                 all_emb = np.vstack((lhs_emb, rhs_emb))
                 topics, topic_model = cluster_documents(all_texts, all_emb)
 
-                # Assign topics back
                 lhs_df['Topic'] = topics[:len(lhs_df)]
                 rhs_df['Topic'] = topics[len(lhs_df):]
 
-                # Store results
                 st.session_state['lhs_df'] = lhs_df
                 st.session_state['rhs_df'] = rhs_df
                 st.session_state['doc_topic_model'] = topic_model
                 st.session_state['method'] = method
+                st.session_state['all_texts'] = all_texts
 
                 st.success("Document-level fingerprinting completed!")
 
             elif method == "Sentence-level":
-                # Sentence-level clustering
                 all_texts = lhs_df['combined_text'].tolist() + rhs_df['combined_text'].tolist()
-                # We ignore doc-level embeddings (lhs_emb, rhs_emb) for sentence-level,
-                # as we re-embed at sentence level.
-                sentences, sentence_embeddings, topics, doc_indices, topic_model = cluster_sentences(all_texts, None)
+                sentences, sentence_embeddings, topics, doc_indices, topic_model = cluster_sentences(all_texts)
 
-                # Store sentence-level data
                 st.session_state['sentences'] = sentences
                 st.session_state['sentence_topics'] = topics
                 st.session_state['doc_indices'] = doc_indices
@@ -340,7 +317,7 @@ with tab_run:
                 st.session_state['lhs_count'] = len(lhs_df)
                 st.session_state['rhs_count'] = len(rhs_df)
                 st.session_state['method'] = method
-
+                st.session_state['all_texts'] = all_texts
                 st.success("Sentence-level fingerprinting completed!")
 
 
@@ -357,11 +334,10 @@ with tab_results:
                 lhs_df['side'] = "LHS"
                 rhs_df['side'] = "RHS"
                 combined_df = pd.concat([lhs_df, rhs_df], ignore_index=True)
-                
-                st.subheader("Assigned Topics (Document-level)")
-                st.write(combined_df[['side', 'combined_text', 'Topic']].head(50))
 
-                # Visualizations
+                st.subheader("Assigned Topics (Document-level)")
+                st.dataframe(combined_df[['side', 'combined_text', 'Topic']])
+
                 topic_model = st.session_state['doc_topic_model']
                 st.subheader("Topic Visualization")
                 fig1 = topic_model.visualize_topics()
@@ -371,13 +347,11 @@ with tab_results:
                 fig2 = topic_model.visualize_hierarchy()
                 st.plotly_chart(fig2)
 
-                display_overlaps(combined_df, method)
+                # Show cluster frequency
+                freq_df = compute_cluster_frequencies(combined_df['Topic'].values, len(lhs_df), level='document')
+                st.subheader("Cluster Frequency (Document-level)")
+                st.dataframe(freq_df)
 
-                # Download results
-                csv = combined_df.to_csv(index=False)
-                b64 = base64.b64encode(csv.encode()).decode()
-                href = f'<a href="data:file/csv;base64,{b64}" download="fingerprint_results_document_level.csv">Download CSV</a>'
-                st.markdown(href, unsafe_allow_html=True)
             else:
                 st.warning("No document-level results found.")
 
@@ -388,18 +362,15 @@ with tab_results:
                 doc_indices = st.session_state['doc_indices']
                 lhs_count = st.session_state['lhs_count']
 
-                # Create a DataFrame with sentence-level info
                 df_sent = pd.DataFrame({
                     'doc_index': doc_indices,
                     'sentence': sentences,
-                    'topic': topics
+                    'topic': topics,
+                    'side': np.where(pd.Series(doc_indices)<lhs_count, "LHS", "RHS")
                 })
 
-                # Mark LHS vs RHS
-                df_sent['side'] = np.where(df_sent['doc_index'] < lhs_count, "LHS", "RHS")
-
                 st.subheader("Assigned Topics (Sentence-level)")
-                st.write(df_sent.head(50))
+                st.dataframe(df_sent)  # full table
 
                 topic_model = st.session_state['sent_topic_model']
                 st.subheader("Topic Visualization (Sentence-level)")
@@ -410,16 +381,83 @@ with tab_results:
                 fig2 = topic_model.visualize_hierarchy()
                 st.plotly_chart(fig2)
 
-                # Compute overlap by sentence-level clusters
-                best_matches = compute_sentence_cluster_overlap(doc_indices, topics, lhs_count)
-                match_df = pd.DataFrame(best_matches, columns=["LHS_doc_index", "Best_RHS_doc_index", "Shared_cluster_count"])
-                st.subheader("Document Overlap Based on Sentence-level Topics")
-                st.write(match_df.head(50))
-
-                # Download results
-                csv = df_sent.to_csv(index=False)
-                b64 = base64.b64encode(csv.encode()).decode()
-                href = f'<a href="data:file/csv;base64,{b64}" download="fingerprint_results_sentence_level.csv">Download CSV</a>'
-                st.markdown(href, unsafe_allow_html=True)
+                # Show cluster frequency
+                freq_df = compute_cluster_frequencies(df_sent['topic'].values, lhs_count, level='sentence')
+                st.subheader("Cluster Frequency (Sentence-level)")
+                st.dataframe(freq_df)
             else:
                 st.warning("No sentence-level results found.")
+
+
+with tab_cluster_browser:
+    st.header("Cluster Browser and Manual Review")
+
+    if 'method' not in st.session_state:
+        st.warning("Run fingerprint matching first.")
+    else:
+        method = st.session_state['method']
+        all_texts = st.session_state.get('all_texts', [])
+
+        if method == "Document-level":
+            if 'lhs_df' in st.session_state and 'rhs_df' in st.session_state:
+                lhs_df = st.session_state['lhs_df']
+                rhs_df = st.session_state['rhs_df']
+                lhs_count = len(lhs_df)
+                combined_df = pd.concat([lhs_df.assign(side='LHS'), rhs_df.assign(side='RHS')], ignore_index=True)
+                all_topics = sorted(combined_df['Topic'].unique())
+
+                selected_clusters = st.multiselect("Select clusters to explore", all_topics)
+                if selected_clusters:
+                    subset = combined_df[combined_df['Topic'].isin(selected_clusters)]
+                    st.write("Documents in selected clusters:")
+                    st.dataframe(subset[['side','combined_text','Topic']])
+
+                    # Optionally select a single document to highlight (no sentence-level here, so no highlighting)
+                    # For doc-level highlighting, we would need sentence-level break. 
+                    # Document-level doesn't have per-sentence clusters by definition.
+                    st.info("For per-sentence highlighting, run Sentence-level method.")
+
+            else:
+                st.warning("No document-level data available.")
+
+        elif method == "Sentence-level":
+            if 'sentences' in st.session_state and 'sentence_topics' in st.session_state and 'doc_indices' in st.session_state:
+                sentences = st.session_state['sentences']
+                topics = st.session_state['sentence_topics']
+                doc_indices = st.session_state['doc_indices']
+                lhs_count = st.session_state['lhs_count']
+                rhs_count = st.session_state['rhs_count']
+
+                df_sent = pd.DataFrame({
+                    'doc_index': doc_indices,
+                    'sentence': sentences,
+                    'topic': topics,
+                    'side': np.where(pd.Series(doc_indices)<lhs_count, "LHS", "RHS")
+                })
+
+                all_clusters = sorted(set(topics))
+                selected_clusters = st.multiselect("Select clusters to explore", all_clusters)
+
+                if selected_clusters:
+                    subset = df_sent[df_sent['topic'].isin(selected_clusters)]
+                    st.write("Sentences in selected clusters:")
+                    st.dataframe(subset[['side', 'doc_index', 'sentence', 'topic']])
+
+                    # Allow selecting a specific doc to view highlighted text
+                    unique_docs_in_subset = sorted(subset['doc_index'].unique())
+                    selected_doc = st.selectbox("Select a document index to view highlighted text (optional)", unique_docs_in_subset)
+                    if selected_doc is not None:
+                        # Extract that doc's sentences and topics
+                        doc_sents = df_sent[df_sent['doc_index'] == selected_doc]
+                        doc_sentences = doc_sents['sentence'].tolist()
+                        doc_sent_topics = doc_sents['topic'].tolist()
+
+                        highlighted_html = highlight_text_by_cluster(doc_sentences, doc_sent_topics, selected_clusters)
+                        st.markdown(highlighted_html, unsafe_allow_html=True)
+
+                        # Indicate which side this doc is on
+                        doc_side = "LHS" if selected_doc < lhs_count else "RHS"
+                        st.write(f"Document index: {selected_doc} (Side: {doc_side})")
+
+            else:
+                st.warning("No sentence-level data available.")
