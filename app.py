@@ -143,9 +143,10 @@ def cluster_sentences(all_texts):
 
     return sentences, sentence_embeddings, topics, doc_indices, topic_model
 
-def compute_cluster_frequencies(topics, lhs_count, level='document'):
-    """Compute how many docs or sentences in LHS and RHS fall into each cluster."""
-    df = pd.DataFrame({'doc_index': range(len(topics)), 'topic': topics})
+def compute_cluster_frequencies(topics, doc_indices, lhs_count, level='document'):
+    """Compute how many docs or sentences in LHS and RHS fall into each cluster 
+    based on doc_indices rather than positional indexing."""
+    df = pd.DataFrame({'doc_index': doc_indices, 'topic': topics})
     lhs_mask = df['doc_index'] < lhs_count
     rhs_mask = ~lhs_mask
 
@@ -165,6 +166,7 @@ def compute_cluster_frequencies(topics, lhs_count, level='document'):
         })
     freq_df = pd.DataFrame(freq_data)
     return freq_df
+
 
 def compute_sentence_cluster_overlap(doc_indices, topics, lhs_count):
     # Map docs to sets of clusters
@@ -349,7 +351,13 @@ with tab_results:
                 st.plotly_chart(fig2)
 
                 # Show cluster frequency
-                freq_df = compute_cluster_frequencies(combined_df['Topic'].values, len(lhs_df), level='document')
+                freq_df = compute_cluster_frequencies(
+                    combined_df['Topic'].values,
+                    np.arange(len(combined_df['Topic'].values)), # doc_indices = range of doc count
+                    len(lhs_df),
+                    level='document'
+                )
+
                 st.subheader("Cluster Frequency (Document-level)")
                 st.dataframe(freq_df)
 
@@ -383,7 +391,14 @@ with tab_results:
                 st.plotly_chart(fig2)
 
                 # Show cluster frequency
-                freq_df = compute_cluster_frequencies(df_sent['topic'].values, lhs_count, level='sentence')
+                # Sentence-level
+                freq_df = compute_cluster_frequencies(
+                    df_sent['topic'].values,
+                    df_sent['doc_index'].values,
+                    lhs_count,
+                    level='sentence'
+                )
+
                 st.subheader("Cluster Frequency (Sentence-level)")
                 st.dataframe(freq_df)
             else:
@@ -433,11 +448,13 @@ with tab_cluster_browser:
 
                 # Show bubble chart visualization
                 # Compute frequencies again:
-                freq_df = compute_cluster_frequencies(df_sent['topic'].values, lhs_count, level='sentence')
-                # freq_df contains columns: cluster, LHS_sentence_count, RHS_sentence_count, In_both
-                # Let's define total_count = LHS_count + RHS_count and a color_metric = LHS_count - RHS_count
+                # After sentence-level clustering is done and df_sent is created
+                freq_df = compute_cluster_frequencies(df_sent['topic'].values, df_sent['doc_index'].values, lhs_count, level='sentence')
+
                 freq_df['Total_count'] = freq_df['LHS_sentence_count'] + freq_df['RHS_sentence_count']
                 freq_df['Balance'] = freq_df['LHS_sentence_count'] - freq_df['RHS_sentence_count']
+
+                # The rest of the bubble chart code remains the same.
 
                 st.subheader("Cluster Bubble Chart")
                 st.markdown("""
