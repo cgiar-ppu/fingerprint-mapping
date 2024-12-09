@@ -9,6 +9,7 @@ import base64
 import re
 import pickle
 import concurrent.futures
+import plotly.express as px
 
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -399,6 +400,7 @@ with tab_cluster_browser:
         all_texts = st.session_state.get('all_texts', [])
 
         if method == "Document-level":
+            # Existing Document-level code remains as before
             if 'lhs_df' in st.session_state and 'rhs_df' in st.session_state:
                 lhs_df = st.session_state['lhs_df']
                 rhs_df = st.session_state['rhs_df']
@@ -412,13 +414,7 @@ with tab_cluster_browser:
                     st.write("Documents in selected clusters:")
                     st.dataframe(subset[['side','combined_text','Topic']])
 
-                    # Optionally select a single document to highlight (no sentence-level here, so no highlighting)
-                    # For doc-level highlighting, we would need sentence-level break. 
-                    # Document-level doesn't have per-sentence clusters by definition.
-                    st.info("For per-sentence highlighting, run Sentence-level method.")
-
-            else:
-                st.warning("No document-level data available.")
+                st.info("For sentence-level highlighting, run the Sentence-level method.")
 
         elif method == "Sentence-level":
             if 'sentences' in st.session_state and 'sentence_topics' in st.session_state and 'doc_indices' in st.session_state:
@@ -435,27 +431,68 @@ with tab_cluster_browser:
                     'side': np.where(pd.Series(doc_indices)<lhs_count, "LHS", "RHS")
                 })
 
-                all_clusters = sorted(set(topics))
-                selected_clusters = st.multiselect("Select clusters to explore", all_clusters)
+                # Show bubble chart visualization
+                # Compute frequencies again:
+                freq_df = compute_cluster_frequencies(df_sent['topic'].values, lhs_count, level='sentence')
+                # freq_df contains columns: cluster, LHS_sentence_count, RHS_sentence_count, In_both
+                # Let's define total_count = LHS_count + RHS_count and a color_metric = LHS_count - RHS_count
+                freq_df['Total_count'] = freq_df['LHS_sentence_count'] + freq_df['RHS_sentence_count']
+                freq_df['Balance'] = freq_df['LHS_sentence_count'] - freq_df['RHS_sentence_count']
 
-                if selected_clusters:
-                    subset = df_sent[df_sent['topic'].isin(selected_clusters)]
-                    st.write("Sentences in selected clusters:")
-                    st.dataframe(subset[['side', 'doc_index', 'sentence', 'topic']])
+                st.subheader("Cluster Bubble Chart")
+                st.markdown("""
+                **Instructions**:  
+                - Hover over bubbles to see cluster details.  
+                - The bubble size = total number of sentences in that cluster.  
+                - The bubble color = balance (LHS - RHS). Positive = more LHS sentences, Negative = more RHS.  
+                - Identify a cluster of interest and then select it from the dropdown below to filter sentences.
+                """)
 
-                    # Allow selecting a specific doc to view highlighted text
-                    unique_docs_in_subset = sorted(subset['doc_index'].unique())
-                    selected_doc = st.selectbox("Select a document index to view highlighted text (optional)", unique_docs_in_subset)
+                # Create a bubble chart
+                # x-axis: cluster ID, y-axis: Total_count (just for visualization)
+                # size: Total_count, color: Balance
+                fig = px.scatter(
+                    freq_df, 
+                    x='cluster', 
+                    y='Total_count', 
+                    size='Total_count',
+                    color='Balance',
+                    color_continuous_scale=px.colors.diverging.RdBu,
+                    hover_data=['cluster', 'LHS_sentence_count', 'RHS_sentence_count', 'In_both'],
+                    title="Cluster Overview"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Now, allow user to select a single cluster to filter
+                selected_cluster = st.selectbox("Select a cluster to view sentences", freq_df['cluster'].sort_values())
+                if selected_cluster is not None:
+                    cluster_subset = df_sent[df_sent['topic'] == selected_cluster]
+                    lhs_subset = cluster_subset[cluster_subset['side'] == "LHS"]
+                    rhs_subset = cluster_subset[cluster_subset['side'] == "RHS"]
+
+                    st.subheader(f"Sentences in Cluster {selected_cluster}")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("**LHS Sentences:**")
+                        st.dataframe(lhs_subset[['doc_index', 'sentence', 'topic']])
+                    with col2:
+                        st.write("**RHS Sentences:**")
+                        st.dataframe(rhs_subset[['doc_index', 'sentence', 'topic']])
+
+                    # Highlighting text (existing code)
+                    st.markdown("### Highlight a Single Document")
+                    unique_docs_in_subset = sorted(cluster_subset['doc_index'].unique())
+                    selected_doc = st.selectbox("Select a document index to highlight its text", unique_docs_in_subset)
                     if selected_doc is not None:
-                        # Extract that doc's sentences and topics
                         doc_sents = df_sent[df_sent['doc_index'] == selected_doc]
                         doc_sentences = doc_sents['sentence'].tolist()
                         doc_sent_topics = doc_sents['topic'].tolist()
 
-                        highlighted_html = highlight_text_by_cluster(doc_sentences, doc_sent_topics, selected_clusters)
+                        # highlight only the selected cluster or all selected clusters?
+                        # Here we highlight only the chosen cluster.
+                        highlighted_html = highlight_text_by_cluster(doc_sentences, doc_sent_topics, [selected_cluster])
                         st.markdown(highlighted_html, unsafe_allow_html=True)
 
-                        # Indicate which side this doc is on
                         doc_side = "LHS" if selected_doc < lhs_count else "RHS"
                         st.write(f"Document index: {selected_doc} (Side: {doc_side})")
 
