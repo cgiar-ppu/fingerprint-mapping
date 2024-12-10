@@ -52,6 +52,8 @@ st.title("Fingerprint Matching Prototype")
 st.markdown("""
 This application allows you to upload two datasets (left and right), select text columns to combine, and then run "fingerprint" matching algorithms.  
 The matching is done by clustering the combined texts or their sentences, and then measuring overlap in clusters between items from the left and right datasets.
+
+**Goal:** Identify how items (e.g., projects) from one dataset match or map to items from another dataset through shared sentence-level clusters.
 """)
 
 # Sidebar for dataset upload
@@ -97,19 +99,17 @@ def load_or_compute_embeddings(df, unique_id):
         embeddings = st.session_state['cached_embeddings'][embeddings_file]
         return embeddings
 
-    # If file doesn't exist or no session cache, compute
     model = get_embedding_model()
     embeddings = generate_embeddings(texts, model)
     st.session_state['cached_embeddings'][embeddings_file] = embeddings
     return embeddings
 
 def cluster_documents(texts, embeddings):
-    # Perform clustering on document level
     stop_words = set(stopwords.words('english'))
     texts_cleaned = []
     for text in texts:
         word_tokens = word_tokenize(text)
-        filtered_text = ' '.join([word for word in word_tokens if word.lower() not in stop_words])
+        filtered_text = ' '.join([w for w in word_tokens if w.lower() not in stop_words])
         texts_cleaned.append(filtered_text)
 
     sentence_model = get_embedding_model()
@@ -119,7 +119,6 @@ def cluster_documents(texts, embeddings):
     return topics, topic_model
 
 def cluster_sentences(all_texts):
-    # Sentence-level clustering
     sentences = []
     doc_indices = []
     for i, doc_text in enumerate(all_texts):
@@ -134,7 +133,7 @@ def cluster_sentences(all_texts):
     texts_cleaned = []
     for text in sentences:
         word_tokens = word_tokenize(text)
-        filtered_text = ' '.join([word for word in word_tokens if word.lower() not in stop_words])
+        filtered_text = ' '.join([w for w in word_tokens if w.lower() not in stop_words])
         texts_cleaned.append(filtered_text)
 
     hdbscan_model = HDBSCAN(min_cluster_size=5, metric='euclidean', cluster_selection_method='eom')
@@ -144,8 +143,6 @@ def cluster_sentences(all_texts):
     return sentences, sentence_embeddings, topics, doc_indices, topic_model
 
 def compute_cluster_frequencies(topics, doc_indices, lhs_count, level='document'):
-    """Compute how many docs or sentences in LHS and RHS fall into each cluster 
-    based on doc_indices rather than positional indexing."""
     df = pd.DataFrame({'doc_index': doc_indices, 'topic': topics})
     lhs_mask = df['doc_index'] < lhs_count
     rhs_mask = ~lhs_mask
@@ -167,9 +164,7 @@ def compute_cluster_frequencies(topics, doc_indices, lhs_count, level='document'
     freq_df = pd.DataFrame(freq_data)
     return freq_df
 
-
 def compute_sentence_cluster_overlap(doc_indices, topics, lhs_count):
-    # Map docs to sets of clusters
     doc_to_clusters = {}
     for i, t in enumerate(topics):
         d = doc_indices[i]
@@ -195,15 +190,12 @@ def compute_sentence_cluster_overlap(doc_indices, topics, lhs_count):
         best_matches.append((ld, best_match, best_score))
     return best_matches
 
-# Color palette for highlighting clusters
 COLOR_PALETTE = [
     "#FFB6C1", "#87CEFA", "#98FB98", "#FFD700", "#FFA07A", "#BA55D3", "#00FA9A", "#20B2AA", "#778899", "#FF69B4",
     "#7FFF00", "#DC143C", "#00FFFF", "#FFA500", "#8A2BE2", "#A9A9A9", "#6A5ACD", "#D2691E", "#5F9EA0", "#FF4500"
 ]
 
 def highlight_text_by_cluster(sentences, sentence_clusters, selected_clusters):
-    # Highlight only if selected_clusters is not empty
-    # Assign each cluster a color
     unique_clusters = list(sorted(set(sentence_clusters)))
     cluster_color_map = {}
     for i, c in enumerate(unique_clusters):
@@ -212,15 +204,12 @@ def highlight_text_by_cluster(sentences, sentence_clusters, selected_clusters):
     highlighted_sentences = []
     for s, c in zip(sentences, sentence_clusters):
         color = cluster_color_map.get(c, "#FFFFFF")
-        # If we only want to highlight selected clusters, check that:
         if c in selected_clusters:
             highlighted_sentences.append(f'<span style="background-color:{color}; padding:2px; border-radius:3px">{s}</span>')
         else:
             highlighted_sentences.append(s)
     return " ".join(highlighted_sentences)
 
-
-# Tabs
 tab_instructions, tab_select_text, tab_run, tab_results, tab_cluster_browser, tab_faq = st.tabs(["Instructions", "Select Text Columns", "Run Fingerprint Matching", "Results & Visualization", "Cluster Browser", "FAQ"])
 
 with tab_instructions:
@@ -230,8 +219,10 @@ with tab_instructions:
 2. **Select Text Columns**: In the "Select Text Columns" tab, choose the columns from each dataset that contain free-text data.
 3. **Run Fingerprint Matching**: In the "Run Fingerprint Matching" tab, select method (Document-level or Sentence-level) and run.
 4. **View Results**: In the "Results & Visualization" tab, see assigned clusters and a cluster frequency table.
-5. **Use Cluster Browser**: In the "Cluster Browser" tab, explore clusters, view associated docs/sentences from both sides, and optionally highlight text by cluster.
-6. **FAQ**: Check for common questions.
+5. **Optionally Merge Topics**: After initial clustering, you can select certain merges to apply from the hierarchical structure.
+6. **Use Cluster Browser**: In the "Cluster Browser" tab, explore clusters, view associated docs/sentences, and highlight text by cluster.
+7. **Check Overlaps**: Use the overlap tables to identify clusters that appear in both LHS and RHS.
+8. **High-level Similarity**: Compute direct similarity matches between items in LHS and their best match in RHS.
     """)
 
 with tab_faq:
@@ -244,7 +235,7 @@ with tab_faq:
 **A:** Document-level clusters entire rows. Sentence-level clusters individual sentences.
 
 **Q:** How to see which clusters overlap?  
-**A:** Check the frequency tables in "Results & Visualization" and then go to "Cluster Browser" to see documents/sentences in chosen clusters.
+**A:** Check the frequency tables in "Results & Visualization" and then refer to the overlap table.
     """)
 
 with tab_select_text:
@@ -289,12 +280,16 @@ with tab_run:
             lhs_df = st.session_state['lhs_df']
             rhs_df = st.session_state['rhs_df']
 
-            # Compute embeddings for LHS and RHS separately, then combine
             lhs_emb = load_or_compute_embeddings(lhs_df, f"lhs_{hash(tuple(lhs_df.columns))}")
             rhs_emb = load_or_compute_embeddings(rhs_df, f"rhs_{hash(tuple(rhs_df.columns))}")
 
+            # Store embeddings for future similarity computations
+            st.session_state['lhs_emb'] = lhs_emb
+            st.session_state['rhs_emb'] = rhs_emb
+
+            all_texts = lhs_df['combined_text'].tolist() + rhs_df['combined_text'].tolist()
+
             if method == "Document-level":
-                all_texts = lhs_df['combined_text'].tolist() + rhs_df['combined_text'].tolist()
                 all_emb = np.vstack((lhs_emb, rhs_emb))
                 topics, topic_model = cluster_documents(all_texts, all_emb)
 
@@ -306,11 +301,12 @@ with tab_run:
                 st.session_state['doc_topic_model'] = topic_model
                 st.session_state['method'] = method
                 st.session_state['all_texts'] = all_texts
+                st.session_state['original_doc_topics'] = topics
+                st.session_state['hierarchical_topics_doc'] = topic_model.hierarchical_topics(all_texts)
 
                 st.success("Document-level fingerprinting completed!")
 
             elif method == "Sentence-level":
-                all_texts = lhs_df['combined_text'].tolist() + rhs_df['combined_text'].tolist()
                 sentences, sentence_embeddings, topics, doc_indices, topic_model = cluster_sentences(all_texts)
 
                 st.session_state['sentences'] = sentences
@@ -321,6 +317,9 @@ with tab_run:
                 st.session_state['rhs_count'] = len(rhs_df)
                 st.session_state['method'] = method
                 st.session_state['all_texts'] = all_texts
+                st.session_state['original_sent_topics'] = topics
+                st.session_state['hierarchical_topics_sent'] = topic_model.hierarchical_topics(sentences)
+
                 st.success("Sentence-level fingerprinting completed!")
 
 
@@ -330,8 +329,12 @@ with tab_results:
         st.warning("Please run fingerprint matching first.")
     else:
         method = st.session_state['method']
+
         if method == "Document-level":
-            if 'lhs_df' in st.session_state and 'rhs_df' in st.session_state and 'doc_topic_model' in st.session_state:
+            if ('doc_topic_model' in st.session_state and 
+                'lhs_df' in st.session_state and 'rhs_df' in st.session_state):
+                
+                topic_model = st.session_state['doc_topic_model']
                 lhs_df = st.session_state['lhs_df'].copy()
                 rhs_df = st.session_state['rhs_df'].copy()
                 lhs_df['side'] = "LHS"
@@ -341,7 +344,6 @@ with tab_results:
                 st.subheader("Assigned Topics (Document-level)")
                 st.dataframe(combined_df[['side', 'combined_text', 'Topic']])
 
-                topic_model = st.session_state['doc_topic_model']
                 st.subheader("Topic Visualization")
                 fig1 = topic_model.visualize_topics()
                 st.plotly_chart(fig1)
@@ -350,10 +352,9 @@ with tab_results:
                 fig2 = topic_model.visualize_hierarchy()
                 st.plotly_chart(fig2)
 
-                # Show cluster frequency
                 freq_df = compute_cluster_frequencies(
                     combined_df['Topic'].values,
-                    np.arange(len(combined_df['Topic'].values)), # doc_indices = range of doc count
+                    np.arange(len(combined_df['Topic'].values)),
                     len(lhs_df),
                     level='document'
                 )
@@ -361,11 +362,51 @@ with tab_results:
                 st.subheader("Cluster Frequency (Document-level)")
                 st.dataframe(freq_df)
 
+                # Overlap table: Only show clusters In_both == True
+                st.subheader("Overlapping Clusters (Document-level)")
+                overlap_df = freq_df[freq_df['In_both'] == True]
+                st.dataframe(overlap_df)
+
+                if 'hierarchical_topics_doc' in st.session_state:
+                    hierarchical_topics = st.session_state['hierarchical_topics_doc']
+                    st.subheader("Hierarchical Topics (Document-level)")
+                    st.dataframe(hierarchical_topics)
+
+                    merges_options = []
+                    merges_map = {}
+                    for i, row in hierarchical_topics.iterrows():
+                        p = row["Parent_ID"]
+                        left_c = row["Child_Left_ID"]
+                        right_c = row["Child_Right_ID"]
+                        d = row["Distance"]
+                        option_str = f"Merge {left_c} & {right_c} -> Parent {p} (Distance: {d})"
+                        merges_options.append(option_str)
+                        merges_map[option_str] = [left_c, right_c]
+
+                    selected_merges = st.multiselect("Select merges to apply", merges_options)
+
+                    if st.button("Apply Merges"):
+                        if selected_merges:
+                            merges_list = [merges_map[m] for m in selected_merges]
+                            new_model, new_topics = topic_model.merge_topics(st.session_state['all_texts'], merges_list)
+
+                            lhs_count = len(st.session_state['lhs_df'])
+                            st.session_state['lhs_df']['Topic'] = new_topics[:lhs_count]
+                            st.session_state['rhs_df']['Topic'] = new_topics[lhs_count:]
+                            st.session_state['doc_topic_model'] = new_model
+
+                            st.success("Merges applied successfully! Refresh the tab to see updated results.")
+
             else:
                 st.warning("No document-level results found.")
 
         elif method == "Sentence-level":
-            if 'sentences' in st.session_state and 'sentence_topics' in st.session_state and 'doc_indices' in st.session_state:
+            if ('sent_topic_model' in st.session_state and 
+                'sentence_topics' in st.session_state and 
+                'doc_indices' in st.session_state and
+                'lhs_count' in st.session_state):
+                
+                topic_model = st.session_state['sent_topic_model']
                 sentences = st.session_state['sentences']
                 topics = st.session_state['sentence_topics']
                 doc_indices = st.session_state['doc_indices']
@@ -379,9 +420,8 @@ with tab_results:
                 })
 
                 st.subheader("Assigned Topics (Sentence-level)")
-                st.dataframe(df_sent)  # full table
+                st.dataframe(df_sent)
 
-                topic_model = st.session_state['sent_topic_model']
                 st.subheader("Topic Visualization (Sentence-level)")
                 fig1 = topic_model.visualize_topics()
                 st.plotly_chart(fig1)
@@ -390,20 +430,105 @@ with tab_results:
                 fig2 = topic_model.visualize_hierarchy()
                 st.plotly_chart(fig2)
 
-                # Show cluster frequency
-                # Sentence-level
+                # Exclude -1 topics for frequency chart
+                df_sent_filtered = df_sent[df_sent['topic'] != -1]
                 freq_df = compute_cluster_frequencies(
-                    df_sent['topic'].values,
-                    df_sent['doc_index'].values,
+                    df_sent_filtered['topic'].values,
+                    df_sent_filtered['doc_index'].values,
                     lhs_count,
                     level='sentence'
                 )
 
-                st.subheader("Cluster Frequency (Sentence-level)")
-                st.dataframe(freq_df)
+                # Overlap table for sentence-level
+                st.subheader("Overlapping Clusters (Sentence-level)")
+                overlap_df = freq_df[freq_df['In_both'] == True]
+                st.dataframe(overlap_df)
+
+                st.subheader("Cluster Frequency Bar Chart (Sentence-level, excluding -1)")
+                # Transform freq_df to long format for a stacked bar chart
+                long_freq_df = pd.DataFrame({
+                    'cluster': np.concatenate([freq_df['cluster'].values, freq_df['cluster'].values]),
+                    'side': ['LHS']*len(freq_df) + ['RHS']*len(freq_df),
+                    'count': np.concatenate([freq_df['LHS_sentence_count'].values, freq_df['RHS_sentence_count'].values])
+                })
+
+                # Filter out cluster == -1 if present
+                long_freq_df = long_freq_df[long_freq_df['cluster'] != -1]
+
+                # Create stacked bar chart
+                fig_bar = px.bar(
+                    long_freq_df,
+                    x='cluster',
+                    y='count',
+                    color='side',
+                    title="Sentence-level Cluster Frequency (Stacked by Side)",
+                    barmode='stack'
+                )
+                st.plotly_chart(fig_bar)
+
+                if 'hierarchical_topics_sent' in st.session_state:
+                    hierarchical_topics = st.session_state['hierarchical_topics_sent']
+                    st.subheader("Hierarchical Topics (Sentence-level)")
+                    st.dataframe(hierarchical_topics)
+
+                    merges_options = []
+                    merges_map = {}
+                    for i, row in hierarchical_topics.iterrows():
+                        p = row["Parent_ID"]
+                        left_c = row["Child_Left_ID"]
+                        right_c = row["Child_Right_ID"]
+                        d = row["Distance"]
+                        option_str = f"Merge {left_c} & {right_c} -> Parent {p} (Distance: {d})"
+                        merges_options.append(option_str)
+                        merges_map[option_str] = [left_c, right_c]
+
+                    selected_merges = st.multiselect("Select merges to apply", merges_options)
+
+                    if st.button("Apply Merges"):
+                        if selected_merges:
+                            merges_list = [merges_map[m] for m in selected_merges]
+                            new_model, new_topics = topic_model.merge_topics(st.session_state['sentences'], merges_list)
+
+                            st.session_state['sentence_topics'] = new_topics
+                            st.session_state['sent_topic_model'] = new_model
+
+                            st.success("Merges applied successfully! Refresh the tab to see updated results.")
+
             else:
                 st.warning("No sentence-level results found.")
 
+        # ADDITIONAL PROCESS: High-level Similarity between LHS and RHS items
+        # This does not modify existing code, just adds a new section at the end.
+        st.subheader("High-level Project Similarities")
+        st.markdown("""
+        Compute cosine similarities between each LHS item and all RHS items, 
+        and find the top match for each LHS item.
+        """)
+        if 'lhs_emb' in st.session_state and 'rhs_emb' in st.session_state and 'lhs_df' in st.session_state and 'rhs_df' in st.session_state:
+            if st.button("Compute High-level Project Similarities"):
+                lhs_emb = st.session_state['lhs_emb']
+                rhs_emb = st.session_state['rhs_emb']
+                lhs_texts = st.session_state['lhs_df']['combined_text'].tolist()
+                rhs_texts = st.session_state['rhs_df']['combined_text'].tolist()
+
+                # Compute cosine similarity
+                sim = cosine_similarity(lhs_emb, rhs_emb)
+                # For each LHS, find the best match in RHS
+                best_matches = sim.argmax(axis=1)  # index of best match for each LHS doc
+                best_scores = sim.max(axis=1)      # best score for each LHS doc
+
+                # Create a result dataframe
+                results = []
+                for i, (best_idx, score) in enumerate(zip(best_matches, best_scores)):
+                    results.append({
+                        "LHS_Index": i,
+                        "LHS_Text": lhs_texts[i],
+                        "Matched_RHS_Index": best_idx,
+                        "Matched_RHS_Text": rhs_texts[best_idx],
+                        "Similarity_Score": score
+                    })
+                results_df = pd.DataFrame(results)
+                st.dataframe(results_df)
 
 with tab_cluster_browser:
     st.header("Cluster Browser and Manual Review")
@@ -412,10 +537,8 @@ with tab_cluster_browser:
         st.warning("Run fingerprint matching first.")
     else:
         method = st.session_state['method']
-        all_texts = st.session_state.get('all_texts', [])
 
         if method == "Document-level":
-            # Existing Document-level code remains as before
             if 'lhs_df' in st.session_state and 'rhs_df' in st.session_state:
                 lhs_df = st.session_state['lhs_df']
                 rhs_df = st.session_state['rhs_df']
@@ -426,8 +549,15 @@ with tab_cluster_browser:
                 selected_clusters = st.multiselect("Select clusters to explore", all_topics)
                 if selected_clusters:
                     subset = combined_df[combined_df['Topic'].isin(selected_clusters)]
-                    st.write("Documents in selected clusters:")
-                    st.dataframe(subset[['side','combined_text','Topic']])
+                    lhs_subset = subset[subset['side']=='LHS']
+                    rhs_subset = subset[subset['side']=='RHS']
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("**LHS Documents in selected clusters:**")
+                        st.dataframe(lhs_subset[['side','combined_text','Topic']])
+                    with col2:
+                        st.write("**RHS Documents in selected clusters:**")
+                        st.dataframe(rhs_subset[['side','combined_text','Topic']])
 
                 st.info("For sentence-level highlighting, run the Sentence-level method.")
 
@@ -446,42 +576,14 @@ with tab_cluster_browser:
                     'side': np.where(pd.Series(doc_indices)<lhs_count, "LHS", "RHS")
                 })
 
-                # Show bubble chart visualization
-                # Compute frequencies again:
-                # After sentence-level clustering is done and df_sent is created
                 freq_df = compute_cluster_frequencies(df_sent['topic'].values, df_sent['doc_index'].values, lhs_count, level='sentence')
-
                 freq_df['Total_count'] = freq_df['LHS_sentence_count'] + freq_df['RHS_sentence_count']
                 freq_df['Balance'] = freq_df['LHS_sentence_count'] - freq_df['RHS_sentence_count']
 
-                # The rest of the bubble chart code remains the same.
-
-                st.subheader("Cluster Bubble Chart")
-                st.markdown("""
-                **Instructions**:  
-                - Hover over bubbles to see cluster details.  
-                - The bubble size = total number of sentences in that cluster.  
-                - The bubble color = balance (LHS - RHS). Positive = more LHS sentences, Negative = more RHS.  
-                - Identify a cluster of interest and then select it from the dropdown below to filter sentences.
-                """)
-
-                # Create a bubble chart
-                # x-axis: cluster ID, y-axis: Total_count (just for visualization)
-                # size: Total_count, color: Balance
-                fig = px.scatter(
-                    freq_df, 
-                    x='cluster', 
-                    y='Total_count', 
-                    size='Total_count',
-                    color='Balance',
-                    color_continuous_scale=px.colors.diverging.RdBu,
-                    hover_data=['cluster', 'LHS_sentence_count', 'RHS_sentence_count', 'In_both'],
-                    title="Cluster Overview"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-                # Now, allow user to select a single cluster to filter
-                selected_cluster = st.selectbox("Select a cluster to view sentences", freq_df['cluster'].sort_values())
+                st.subheader("Cluster Selection")
+                st.markdown("Select a cluster to view sentences from LHS and RHS side-by-side.")
+                available_clusters = freq_df['cluster'].sort_values()
+                selected_cluster = st.selectbox("Select a cluster to view sentences", available_clusters)
                 if selected_cluster is not None:
                     cluster_subset = df_sent[df_sent['topic'] == selected_cluster]
                     lhs_subset = cluster_subset[cluster_subset['side'] == "LHS"]
@@ -496,7 +598,6 @@ with tab_cluster_browser:
                         st.write("**RHS Sentences:**")
                         st.dataframe(rhs_subset[['doc_index', 'sentence', 'topic']])
 
-                    # Highlighting text (existing code)
                     st.markdown("### Highlight a Single Document")
                     unique_docs_in_subset = sorted(cluster_subset['doc_index'].unique())
                     selected_doc = st.selectbox("Select a document index to highlight its text", unique_docs_in_subset)
@@ -505,8 +606,6 @@ with tab_cluster_browser:
                         doc_sentences = doc_sents['sentence'].tolist()
                         doc_sent_topics = doc_sents['topic'].tolist()
 
-                        # highlight only the selected cluster or all selected clusters?
-                        # Here we highlight only the chosen cluster.
                         highlighted_html = highlight_text_by_cluster(doc_sentences, doc_sent_topics, [selected_cluster])
                         st.markdown(highlighted_html, unsafe_allow_html=True)
 
