@@ -435,7 +435,7 @@ with tab_results:
                 # Add dataset side info
                 cumulative_sizes = np.cumsum(dataset_sizes)
                 def find_dataset_idx(x):
-                    return np.searchsorted(cumulative_sizes, x, side='right')
+                    return np.searchsorted(cumulative_sizes, x, side='right') + 1
                 df_sent['dataset_id'] = df_sent['doc_index'].apply(find_dataset_idx)
                 st.dataframe(df_sent)
 
@@ -605,7 +605,7 @@ with tab_cluster_browser:
                 cumulative_sizes = np.cumsum(dataset_sizes)
 
                 def find_dataset_idx(x):
-                    return np.searchsorted(cumulative_sizes, x, side='right')
+                    return np.searchsorted(cumulative_sizes, x, side='right') + 1
                 df_sent = pd.DataFrame({
                     'doc_index': doc_indices,
                     'sentence': sentences,
