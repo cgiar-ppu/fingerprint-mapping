@@ -682,3 +682,25 @@ with tab_cosine_sim:
                         file_name="similarity_matrix.csv",
                         mime="text/csv"
                     )
+
+                    # New section: Bar chart visualization for each row
+                    st.subheader("Bar Chart Visualization")
+                    st.markdown("""
+                    Select a row from the target dataset (index of the similarity matrix), and visualize its similarity 
+                    distribution across all source dataset items in a bar chart.
+                    """)
+                    row_to_visualize = st.selectbox("Select a target item (row) to visualize", options=sim_df.index)
+                    if row_to_visualize:
+                        row_values = sim_df.loc[row_to_visualize]
+                        row_df = pd.DataFrame({
+                            'Source_Item': row_values.index,
+                            'Similarity': row_values.values
+                        })
+                        fig_bar = px.bar(
+                            row_df, 
+                            x='Source_Item', 
+                            y='Similarity', 
+                            title=f"Similarity Distribution for '{row_to_visualize}'",
+                            labels={'Source_Item': 'Source Dataset Items', 'Similarity': 'Cosine Similarity'}
+                        )
+                        st.plotly_chart(fig_bar)
