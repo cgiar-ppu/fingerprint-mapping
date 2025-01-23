@@ -90,6 +90,7 @@ def load_or_compute_embeddings(df, unique_id):
     embeddings_file = f"{unique_id}.pkl"
     texts = df['combined_text'].tolist()
 
+    # We'll keep cached embeddings in session_state to avoid repeated computation
     if 'cached_embeddings' not in st.session_state:
         st.session_state['cached_embeddings'] = {}
 
@@ -146,32 +147,30 @@ def compute_cluster_frequencies(topics, doc_indices, dataset_sizes, level='docum
     dataset_sizes: list of sizes of each dataset
     """
     df = pd.DataFrame({'doc_index': doc_indices, 'topic': topics})
-    cumulative_sizes = np.cumsum(dataset_sizes)
-    # For dataset i, the docs range from sum(dataset_sizes[:i]) to sum(dataset_sizes[:i+1])-1
     freq_data = []
     all_clusters = sorted(set(topics))
 
-    # Precompute counts per dataset
+    # Precompute the doc_index ranges for each dataset
     dataset_counts = []
     start = 0
     for size in dataset_sizes:
         end = start + size
-        mask = (df['doc_index']>=start)&(df['doc_index']<end)
+        mask = (df['doc_index'] >= start) & (df['doc_index'] < end)
         counts = df[mask]['topic'].value_counts()
         dataset_counts.append(counts)
         start = end
 
     for c in all_clusters:
         row = {'cluster': c}
-        # Count per dataset
         in_any = False
         for i, counts in enumerate(dataset_counts):
-            cnt = counts.get(c,0)
+            cnt = counts.get(c, 0)
             row[f'Dataset{i+1}_{level}_count'] = cnt
             if cnt > 0:
                 in_any = True
+
         # Determine if cluster is in more than one dataset
-        nonzero_counts = [row[k] for k in row.keys() if '_count' in k and row[k]>0]
+        nonzero_counts = [row[k] for k in row.keys() if '_count' in k and row[k] > 0]
         row['In_multiple'] = (len(nonzero_counts) > 1)
         freq_data.append(row)
 
@@ -192,29 +191,37 @@ def highlight_text_by_cluster(sentences, sentence_clusters, selected_clusters):
     for s, c in zip(sentences, sentence_clusters):
         color = cluster_color_map.get(c, "#FFFFFF")
         if c in selected_clusters:
-            highlighted_sentences.append(f'<span style="background-color:{color}; padding:2px; border-radius:3px">{s}</span>')
+            highlighted_sentences.append(
+                f'<span style="background-color:{color}; padding:2px; border-radius:3px">{s}</span>'
+            )
         else:
             highlighted_sentences.append(s)
     return " ".join(highlighted_sentences)
 
 
-tab_instructions, tab_select_text, tab_run, tab_results, tab_cluster_browser, tab_faq = st.tabs(
-    ["Instructions", "Select Text Columns", "Run Fingerprint Matching", "Results & Visualization", "Cluster Browser", "FAQ"]
+tab_instructions, tab_select_text, tab_run, tab_results, tab_cluster_browser, tab_cosine_sim, tab_faq = st.tabs(
+    ["Instructions", "Select Text Columns", "Run Fingerprint Matching", "Results & Visualization", "Cluster Browser", "Cosine Similarity", "FAQ"]
 )
 
+# -------------------------------------------------------------------------------------------
+# Instructions
+# -------------------------------------------------------------------------------------------
 with tab_instructions:
     st.header("How to Use")
     st.markdown(f"""
-1. **Select Number of Datasets**: Already done (you chose {num_datasets}).
-2. **Upload Datasets**: On the left sidebar, upload all {num_datasets} datasets.
-3. **Select Text Columns**: In the "Select Text Columns" tab, choose the columns from each dataset to combine into a single text field.
-4. **Run Fingerprint Matching**: In the "Run Fingerprint Matching" tab, select method (Document-level or Sentence-level) and run.
-5. **View Results**: In the "Results & Visualization" tab, see assigned clusters and a cluster frequency table across all datasets.
-6. **Optionally Merge Topics**: After initial clustering, select merges from the hierarchical structure.
-7. **Use Cluster Browser**: In the "Cluster Browser" tab, explore clusters, view associated docs/sentences.
-8. **Check Overlaps and Similarities**: Use overlap tables and compute multi-dataset similarities at a high level.
+1. **Select Number of Datasets**: Already done (you chose {num_datasets}).  
+2. **Upload Datasets**: On the left sidebar, upload all {num_datasets} datasets.  
+3. **Select Text Columns**: In the "Select Text Columns" tab, choose the columns from each dataset to combine into a single text field.  
+4. **Run Fingerprint Matching**: In the "Run Fingerprint Matching" tab, select method (Document-level or Sentence-level) and run.  
+5. **View Results**: In the "Results & Visualization" tab, see assigned clusters and a cluster frequency table across all datasets.  
+6. **Optionally Merge Topics**: After initial clustering, select merges from the hierarchical structure.  
+7. **Use Cluster Browser**: In the "Cluster Browser" tab, explore clusters, view associated docs/sentences.  
+8. **Cosine Similarity**: In the "Cosine Similarity" tab, compare items across two datasets using the vector embeddings.  
     """)
 
+# -------------------------------------------------------------------------------------------
+# FAQ
+# -------------------------------------------------------------------------------------------
 with tab_faq:
     st.header("FAQ")
     st.markdown("""
@@ -228,6 +235,9 @@ with tab_faq:
 **A:** Check the frequency tables in "Results & Visualization" and the overlap table.
     """)
 
+# -------------------------------------------------------------------------------------------
+# Select Text Columns
+# -------------------------------------------------------------------------------------------
 with tab_select_text:
     st.header("Select Text Columns")
     if any([df is None for df in datasets]):
@@ -238,7 +248,11 @@ with tab_select_text:
             if df is not None:
                 cols = df.columns.tolist()
                 st.subheader(f"Dataset {i+1} Columns")
-                selected_cols = st.multiselect(f"Select columns to combine as text (Dataset {i+1})", cols, default=cols[:1] if cols else [])
+                selected_cols = st.multiselect(
+                    f"Select columns to combine as text (Dataset {i+1})",
+                    cols,
+                    default=cols[:1] if cols else []
+                )
                 combined_text_cols.append(selected_cols)
             else:
                 combined_text_cols.append([])
@@ -264,7 +278,9 @@ with tab_select_text:
                 st.write(f"Dataset {i+1} Sample:")
                 st.dataframe(df)
 
-
+# -------------------------------------------------------------------------------------------
+# Run Fingerprint Matching
+# -------------------------------------------------------------------------------------------
 with tab_run:
     st.header("Run Fingerprint Matching")
     if 'datasets' not in st.session_state:
@@ -274,13 +290,14 @@ with tab_run:
 
         if st.button("Run Fingerprint Matching"):
             datasets_combined = st.session_state['datasets']
+
             # Compute embeddings for each dataset
             embeddings_list = []
             for i, df in enumerate(datasets_combined):
                 emb = load_or_compute_embeddings(df, f"dataset{i}_{hash(tuple(df.columns))}")
                 embeddings_list.append(emb)
 
-            # Store embeddings for future similarity computations
+            # Store embeddings for future usage
             st.session_state['embeddings_list'] = embeddings_list
 
             # Combine all texts
@@ -332,7 +349,9 @@ with tab_run:
 
                 st.success("Sentence-level fingerprinting completed!")
 
-
+# -------------------------------------------------------------------------------------------
+# Results & Visualization
+# -------------------------------------------------------------------------------------------
 with tab_results:
     st.header("Results & Visualization")
     if 'method' not in st.session_state:
@@ -361,7 +380,6 @@ with tab_results:
                 st.plotly_chart(fig2)
 
                 # Compute frequency
-                # doc_indices = a simple range from 0 to sum(dataset_sizes)-1
                 total_docs = sum(dataset_sizes)
                 topics = np.concatenate([df['Topic'].values for df in datasets_combined])
                 doc_indices = np.arange(total_docs)
@@ -375,7 +393,7 @@ with tab_results:
                 st.subheader("Cluster Frequency (Document-level)")
                 st.dataframe(freq_df)
 
-                # Overlap (In_multiple) means cluster appears in >1 dataset
+                # Overlapping clusters
                 st.subheader("Overlapping Clusters (Document-level)")
                 overlap_df = freq_df[freq_df['In_multiple'] == True]
                 st.dataframe(overlap_df)
@@ -398,26 +416,27 @@ with tab_results:
 
                     selected_merges = st.multiselect("Select merges to apply", merges_options)
 
-                    if st.button("Apply Merges"):
+                    if st.button("Apply Merges (Doc-level)"):
                         if selected_merges:
                             merges_list = [merges_map[m] for m in selected_merges]
                             new_model, new_topics = topic_model.merge_topics(st.session_state['all_texts'], merges_list)
                             # Reassign topics
-                            start=0
+                            start = 0
                             for i,df in enumerate(datasets_combined):
                                 size = dataset_sizes[i]
                                 df['Topic']=new_topics[start:start+size]
-                                start+=size
+                                start += size
                             st.session_state['datasets']=datasets_combined
                             st.session_state['doc_topic_model']=new_model
-                            st.success("Merges applied successfully! Refresh the tab to see updated results.")
+                            st.success("Merges applied successfully! Please refresh or revisit the tab to see updated results.")
 
             else:
                 st.warning("No document-level results found.")
 
         elif method == "Sentence-level":
             if ('sent_topic_model' in st.session_state and 
-                'sentence_topics' in st.session_state and 'doc_indices' in st.session_state and
+                'sentence_topics' in st.session_state and 
+                'doc_indices' in st.session_state and
                 'datasets' in st.session_state):
                 
                 topic_model = st.session_state['sent_topic_model']
@@ -425,14 +444,13 @@ with tab_results:
                 topics = st.session_state['sentence_topics']
                 doc_indices = st.session_state['doc_indices']
 
-                # Show assigned topics at sentence-level is tricky, but we just show a table
+                # Show assigned topics
                 st.subheader("Assigned Topics (Sentence-level)")
                 df_sent = pd.DataFrame({
                     'doc_index': doc_indices,
                     'sentence': sentences,
                     'topic': topics
                 })
-                # Add dataset side info
                 cumulative_sizes = np.cumsum(dataset_sizes)
                 def find_dataset_idx(x):
                     return np.searchsorted(cumulative_sizes, x, side='right') + 1
@@ -443,11 +461,11 @@ with tab_results:
                 fig1 = topic_model.visualize_topics()
                 st.plotly_chart(fig1)
 
-                st.subheader("Hierarchical Topic Visualization")
+                st.subheader("Hierarchical Topic Visualization (Sentence-level)")
                 fig2 = topic_model.visualize_hierarchy()
                 st.plotly_chart(fig2)
 
-                # Exclude -1
+                # Exclude -1 cluster if you want
                 df_sent_filtered = df_sent[df_sent['topic'] != -1]
                 freq_df = compute_cluster_frequencies(
                     df_sent_filtered['topic'].values,
@@ -460,18 +478,14 @@ with tab_results:
                 overlap_df = freq_df[freq_df['In_multiple'] == True]
                 st.dataframe(overlap_df)
 
-                # Stacked bar chart of frequencies
-                # Transform freq_df to long format
+                # Stacked bar of frequencies
                 count_cols = [c for c in freq_df.columns if c.endswith('_count')]
                 long_data = []
                 for i,row in freq_df.iterrows():
-                    c=row['cluster']
-                    if c == -1:
-                        continue
+                    c = row['cluster']
                     for cc in count_cols:
                         long_data.append((c, cc, row[cc]))
                 long_freq_df = pd.DataFrame(long_data, columns=['cluster','dataset_col','count'])
-                # dataset_col format: DatasetX_sentence_count
                 long_freq_df['dataset'] = long_freq_df['dataset_col'].apply(lambda x: x.split('_')[0])
 
                 fig_bar = px.bar(
@@ -502,72 +516,23 @@ with tab_results:
 
                     selected_merges = st.multiselect("Select merges to apply", merges_options)
 
-                    if st.button("Apply Merges"):
+                    if st.button("Apply Merges (Sentence-level)"):
                         if selected_merges:
                             merges_list = [merges_map[m] for m in selected_merges]
                             new_model, new_topics = topic_model.merge_topics(st.session_state['sentences'], merges_list)
                             st.session_state['sentence_topics'] = new_topics
                             st.session_state['sent_topic_model'] = new_model
-                            st.success("Merges applied successfully! Refresh the tab to see updated results.")
+                            st.success("Merges applied successfully! Refresh or revisit the tab to see updated results.")
 
             else:
                 st.warning("No sentence-level results found.")
 
-        # ADDITIONAL PROCESS: High-level Similarity among multiple datasets
-        st.subheader("High-level Project Similarities")
-        st.markdown("""
-        Compute cosine similarities between each document in the first dataset and all documents in the other datasets.
-        For each document in the first dataset:
-        - Find the best match in each of the other datasets
-        - Show those matches and their similarity scores
-        - Compute an average similarity score across all other datasets
-        """)
+        # Already existing "High-level Project Similarities" or other content can remain here
+        # ...
 
-        # We need embeddings_list and datasets
-        if 'embeddings_list' in st.session_state and 'datasets' in st.session_state:
-            embeddings_list = st.session_state['embeddings_list']
-            datasets_combined = st.session_state['datasets']
-            if st.button("Compute High-level Project Similarities"):
-                # We'll treat the first dataset as the "baseline"
-                base_emb = embeddings_list[0]
-                base_texts = datasets_combined[0]['combined_text'].tolist()
-
-                # For each other dataset, compute similarity
-                other_datasets_emb = embeddings_list[1:]
-                other_datasets_texts = [d['combined_text'].tolist() for d in datasets_combined[1:]]
-
-                results = []
-                for i, lhs_vec in enumerate(base_emb):
-                    # lhs_vec shape: (dim,)
-                    # compute similarity to each other dataset
-                    # We'll store best match from each dataset and their score
-                    row = {
-                        "Dataset1_Index": i,
-                        "Dataset1_Text": base_texts[i]
-                    }
-
-                    scores_all = []
-                    for j, emb in enumerate(other_datasets_emb):
-                        sim = cosine_similarity(lhs_vec.reshape(1,-1), emb).flatten()
-                        best_idx = sim.argmax()
-                        best_score = sim.max()
-                        # Store info
-                        row[f"BestMatch_Dataset{j+2}_Index"] = best_idx
-                        row[f"BestMatch_Dataset{j+2}_Text"] = other_datasets_texts[j][best_idx]
-                        row[f"BestMatch_Dataset{j+2}_Score"] = best_score
-                        scores_all.append(best_score)
-                    # Compute average score
-                    if scores_all:
-                        row["Average_Score"] = np.mean(scores_all)
-                    else:
-                        row["Average_Score"] = np.nan
-
-                    results.append(row)
-
-                results_df = pd.DataFrame(results)
-                st.dataframe(results_df)
-
-
+# -------------------------------------------------------------------------------------------
+# Cluster Browser
+# -------------------------------------------------------------------------------------------
 with tab_cluster_browser:
     st.header("Cluster Browser and Manual Review")
 
@@ -578,10 +543,8 @@ with tab_cluster_browser:
         if 'datasets' in st.session_state and 'dataset_sizes' in st.session_state:
             datasets_combined = st.session_state['datasets']
             dataset_sizes = st.session_state['dataset_sizes']
-            # For browsing clusters, we currently only implemented logic for 2 datasets scenario.
-            # For multiple datasets, let's show a generic cluster browser for document-level:
+
             if method == "Document-level" and 'doc_topic_model' in st.session_state:
-                # Combine all datasets
                 combined_df = []
                 for i, df in enumerate(datasets_combined):
                     df_copy = df.copy()
@@ -602,6 +565,7 @@ with tab_cluster_browser:
                 sentences = st.session_state['sentences']
                 topics = st.session_state['sentence_topics']
                 doc_indices = st.session_state['doc_indices']
+                dataset_sizes = st.session_state['dataset_sizes']
                 cumulative_sizes = np.cumsum(dataset_sizes)
 
                 def find_dataset_idx(x):
@@ -626,12 +590,11 @@ with tab_cluster_browser:
                         st.subheader(f"Dataset {i+1} Sentences in Cluster {selected_cluster}")
                         st.dataframe(ds_sub[['doc_index','sentence','topic']])
 
-                    # Optionally highlight text for a selected doc
                     st.markdown("### Highlight a Single Document")
                     unique_docs = cluster_subset['doc_index'].unique()
                     selected_doc = st.selectbox("Select a document index to highlight its text", unique_docs)
                     if selected_doc is not None:
-                        doc_sents = cluster_subset[cluster_subset['doc_index']==selected_doc].sort_values('doc_index')
+                        doc_sents = df_sent[df_sent['doc_index'] == selected_doc]
                         doc_sentences = doc_sents['sentence'].tolist()
                         doc_sent_topics = doc_sents['topic'].tolist()
                         highlighted_html = highlight_text_by_cluster(doc_sentences, doc_sent_topics, [selected_cluster])
@@ -643,3 +606,79 @@ with tab_cluster_browser:
                 st.warning("No suitable data for cluster browser available.")
         else:
             st.warning("No datasets available.")
+
+# -------------------------------------------------------------------------------------------
+# NEW: Cosine Similarity Tab
+# -------------------------------------------------------------------------------------------
+with tab_cosine_sim:
+    st.header("Cosine Similarity")
+
+    st.markdown("""
+    **Compute pairwise cosine similarity** between any two selected datasets.
+    - Uses the same sentence-transformer embeddings (`all-MiniLM-L6-v2`).
+    - Select which dataset is the "source" and which is the "target."
+    - We'll produce a matrix/table where **rows = items from target dataset** and **columns = items from source dataset**, 
+      showing the similarity scores.
+    """)
+
+    if 'datasets' not in st.session_state or 'embeddings_list' not in st.session_state:
+        st.warning("Please upload datasets, combine columns, and run the embedding step at least once.")
+    else:
+        datasets_combined = st.session_state['datasets']
+        embeddings_list = st.session_state['embeddings_list']
+
+        # Let user pick which datasets to compare (if multiple)
+        dataset_options = [f"Dataset {i+1}" for i in range(len(datasets_combined))]
+        if len(dataset_options) < 2:
+            st.warning("You need at least 2 datasets to perform Cosine Similarity.")
+        else:
+            source_ds_idx = st.selectbox("Select Source Dataset", range(len(datasets_combined)), 
+                                         format_func=lambda x: dataset_options[x])
+            target_ds_idx = st.selectbox("Select Target Dataset", range(len(datasets_combined)), 
+                                         format_func=lambda x: dataset_options[x])
+
+            if source_ds_idx == target_ds_idx:
+                st.info("Select two different datasets for a meaningful comparison.")
+            else:
+                df_source = datasets_combined[source_ds_idx]
+                df_target = datasets_combined[target_ds_idx]
+
+                # Allow user to select columns for labeling source and target
+                st.subheader("Select Label Columns for Source & Target Datasets")
+                source_label_col = st.selectbox("Source Dataset Label Column", df_source.columns.tolist())
+                target_label_col = st.selectbox("Target Dataset Label Column", df_target.columns.tolist())
+
+                if st.button("Compute Cosine Similarity"):
+                    # Get the embeddings
+                    source_emb = embeddings_list[source_ds_idx]
+                    target_emb = embeddings_list[target_ds_idx]
+
+                    # shape: (len(target), len(source))
+                    sim_matrix = cosine_similarity(target_emb, source_emb)
+
+                    # Use user-selected columns for labeling
+                    source_labels = df_source[source_label_col].astype(str).tolist()
+                    target_labels = df_target[target_label_col].astype(str).tolist()
+
+                    # Build a DataFrame where
+                    # - index = target dataset rows (named from target_labels)
+                    # - columns = source dataset rows (named from source_labels)
+                    sim_df = pd.DataFrame(sim_matrix, index=target_labels, columns=source_labels)
+
+                    st.markdown(f"**Similarity Matrix** (rows = {dataset_options[target_ds_idx]}, columns = {dataset_options[source_ds_idx]})")
+                    st.dataframe(sim_df)
+
+                    st.markdown("""
+                    **Interpretation**:
+                    - Each cell shows how similar an item (row) from the target dataset is to an item (column) in the source dataset.
+                    - Values closer to 1.0 indicate higher similarity; closer to 0.0 indicate lower similarity.
+                    """)
+
+                    # Optionally, let user download the matrix
+                    csv_data = sim_df.to_csv()
+                    st.download_button(
+                        "Download Similarity Matrix (CSV)",
+                        data=csv_data,
+                        file_name="similarity_matrix.csv",
+                        mime="text/csv"
+                    )
