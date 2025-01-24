@@ -683,24 +683,25 @@ with tab_cosine_sim:
                         mime="text/csv"
                     )
 
-                    # New section: Bar chart visualization for each row
+                    # New section: Bar chart visualization (one item at a time)
                     st.subheader("Bar Chart Visualization")
-                    st.markdown("""
-                    Select a row from the target dataset (index of the similarity matrix), and visualize its similarity 
-                    distribution across all source dataset items in a bar chart.
-                    """)
-                    row_to_visualize = st.selectbox("Select a target item (row) to visualize", options=sim_df.index)
-                    if row_to_visualize:
-                        row_values = sim_df.loc[row_to_visualize]
-                        row_df = pd.DataFrame({
-                            'Source_Item': row_values.index,
-                            'Similarity': row_values.values
-                        })
-                        fig_bar = px.bar(
-                            row_df, 
-                            x='Source_Item', 
-                            y='Similarity', 
-                            title=f"Similarity Distribution for '{row_to_visualize}'",
-                            labels={'Source_Item': 'Source Dataset Items', 'Similarity': 'Cosine Similarity'}
-                        )
-                        st.plotly_chart(fig_bar)
+                    st.markdown(
+                        "Select a target item (row) from the dropdown below to see its similarity distribution. "
+                        "This approach only loads one chart at a time, reducing resource usage."
+                    )
+
+                    selected_row_label = st.selectbox("Select target item to visualize", sim_df.index)
+                    row_values = sim_df.loc[selected_row_label]
+                    row_df = pd.DataFrame({
+                        'Source_Item': row_values.index,
+                        'Similarity': row_values.values
+                    })
+
+                    fig_bar = px.bar(
+                        row_df,
+                        x='Source_Item',
+                        y='Similarity',
+                        title=f"Similarity Distribution for '{selected_row_label}'",
+                        labels={'Source_Item': 'Source Dataset Items', 'Similarity': 'Cosine Similarity'}
+                    )
+                    st.plotly_chart(fig_bar)
